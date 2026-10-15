@@ -1,5 +1,7 @@
 # unicode
 
+[![CI](https://github.com/Kronuz/unicode/actions/workflows/ci.yml/badge.svg)](https://github.com/Kronuz/unicode/actions/workflows/ci.yml)
+
 Unicode general categories, simple lowercase mappings, and lenient UTF-8 decoding for
 C++20, as two-stage lookup tables generated from the Unicode Character Database
 (Unicode 17.0.0). Header-only, no dependencies.
