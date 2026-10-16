@@ -1,0 +1,12 @@
+# unicode: two-stage tables. Render: d2 --layout elk --sketch --theme 302 docs/unicode.d2 docs/unicode.svg
+direction: right
+cp: "code point\nU+00C9" {shape: oval}
+stage1: "stage 1\nblock index = cp >> 8" {shape: stored_data}
+stage2: "stage 2: shared 256-entry blocks" {
+  b0: "block A"
+  b1: "block B (shared by many)"
+}
+out: "category · lowercase delta" {shape: page}
+cp -> stage1
+stage1 -> stage2.b0: "U+00xx"
+stage2.b0 -> out: "offset = cp & 0xFF"

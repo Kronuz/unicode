@@ -9,6 +9,7 @@ tools/gen_tables.py    Generator and --check against a reference dump.
 test/test.cc           Table digest, spot checks, UTF-8 round trip, optional full dump check.
 fuzz/fuzz_utf8.cc      libFuzzer: decoding stays in bounds, advances, and round-trips.
 bench/bench.cc         ns per code point over a UTF-8 file.
+docs/unicode.d2     README diagram; render: d2 --layout elk --sketch --theme 302 docs/unicode.d2 docs/unicode.svg
 ```
 
 ## Invariants
