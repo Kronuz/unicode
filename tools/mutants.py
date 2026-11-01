@@ -19,14 +19,26 @@ only = set(sys.argv[3:])
 src = open(os.path.join(tree, "unicode.hh"), encoding="utf-8").read()
 
 MUTANTS = {
-    # an ASCII byte advances two
-    "ascii_advance": ("\tif (b0 < 0x80) {\n\t\t++p;\n\t\treturn b0;\n\t}\n\treturn detail::", "\tif (b0 < 0x80) {\n\t\tp += 2;\n\t\treturn b0;\n\t}\n\treturn detail::"),
+    # a window of ASCII advances two
+    "window_advance": ("\t\tif ((window & 0x8080808080808080ull) == 0) {\n\t\t\t++p;", "\t\tif ((window & 0x8080808080808080ull) == 0) {\n\t\t\tp += 2;"),
+    # the window test is inverted
+    "window_invert": ("if ((window & 0x8080808080808080ull) == 0) {", "if ((window & 0x8080808080808080ull) != 0) {"),
+    # the window test ignores the first two bytes (a lead byte followed by a continuation passes as itself)
+    "window_skips_two": ("(window & 0x8080808080808080ull)", "(window & 0x8080808080800000ull)"),
+    # the window may read one byte past `end`
+    "window_end_seven": ("if (!std::is_constant_evaluated() && end - p >= 8) {", "if (!std::is_constant_evaluated() && end - p >= 7) {"),
+    # the window may read many bytes past `end`
+    "window_end_one": ("if (!std::is_constant_evaluated() && end - p >= 8) {", "if (!std::is_constant_evaluated() && end - p >= 1) {"),
+    # an ASCII byte in the last seven bytes advances two
+    "tail_advance": ("\t} else if (b0 < 0x80) {\n\t\t++p;", "\t} else if (b0 < 0x80) {\n\t\tp += 2;"),
+    # the result of the slow path is dropped (p stays)
+    "step_not_stored": ("\tp = step.next;", "\tp = p;"),
     # 0xC1 starts a two-byte sequence
     "lead_c1": ("if (b0 >= 0xC2 && b0 <= 0xDF) {", "if (b0 >= 0xC1 && b0 <= 0xDF) {"),
     # 0xF4 no longer starts a four-byte sequence
     "lead_f4": ("} else if (b0 >= 0xF0 && b0 <= 0xF4) {", "} else if (b0 >= 0xF0 && b0 <= 0xF3) {"),
     # 0xC0 counts as a continuation byte
-    "cont_c0": ("if (c1 < 0x40) {\n\t\t\t\tp += 2;", "if (c1 <= 0x40) {\n\t\t\t\tp += 2;"),
+    "cont_c0": ("if (c1 < 0x40) {", "if (c1 <= 0x40) {"),
     # a two-byte sequence may read the byte at `end`
     "end_two": ("\t\tif (left >= 2) {", "\t\tif (left >= 1) {"),
     # a three-byte sequence may read past `end`
@@ -46,18 +58,18 @@ MUTANTS = {
     # the payload of a three-byte sequence is shifted wrongly
     "shift_three": ("char32_t c = char32_t(((b0 & 0x0F) << 12) | (c1 << 6) | c2);", "char32_t c = char32_t(((b0 & 0x0F) << 12) | (c1 << 5) | c2);"),
     # a two-byte sequence advances three
-    "advance_two": ("p += 2;", "p += 3;"),
+    "advance_two": ("p + 2};", "p + 3};"),
     # a three-byte sequence advances two
-    "advance_three": ("p += 3;", "p += 2;"),
+    "advance_three": ("p + 3};", "p + 2};"),
     # a four-byte sequence advances three
-    "advance_four": ("p += 4;", "p += 3;"),
-    # an ASCII byte advances two
-    "ascii_advance": ("\tif (b0 < 0x80) {\n\t\t++p;\n\t\treturn b0;\n\t}\n\treturn detail::", "\tif (b0 < 0x80) {\n\t\tp += 2;\n\t\treturn b0;\n\t}\n\treturn detail::"),
+    "advance_four": ("p + 4};", "p + 3};"),
     # an invalid byte decodes as something else than itself
-    "fallback_value": ("\t++p;\n\treturn b0;\n}", "\t++p;\n\treturn b0 | 0x100;\n}"),
+    "fallback_value": ("\treturn {b0, p + 1};", "\treturn {b0 | 0x100, p + 1};"),
+    # an invalid byte advances two
+    "fallback_advance": ("\treturn {b0, p + 1};", "\treturn {b0, p + 2};"),
 }
 
-if len(MUTANTS) < 15:
+if len(MUTANTS) < 20:
     raise SystemExit("mutant table shrank")
 
 work = os.environ.get("MUT_DIR") or tempfile.mkdtemp(prefix="unicode_mutants_")
@@ -80,7 +92,8 @@ for name, (old, new) in MUTANTS.items():
            os.path.join(tree, "test/diff_test.cc"), "-o", exe]
     built = subprocess.run(cmd, capture_output=True, text=True)
     if built.returncode != 0:
-        if "static assertion failed" in built.stderr:
+        if any(m in built.stderr for m in ("static assertion failed", "non-constant condition for static assertion",
+                                           "static assertion expression is not")):
             print(f"{name}: killed (a static_assert in the test fails)")
             shutil.rmtree(d, ignore_errors=True)
             continue

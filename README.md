@@ -75,23 +75,34 @@ the tables match Xapian 2.1.0's `Unicode::get_category` and `Unicode::tolower` o
 
 ## ⚡ Performance
 
-`next_utf8` decides ASCII with one inline comparison, so text that is mostly ASCII decodes
-fast. On an Apple M4 Pro (Apple clang 17, `-O3`), in ns per code point from `bench/bench.cc`
-("pipeline" decodes, then adds `category_of` and `tolower`):
+`next_utf8` decides ASCII on a window of eight bytes (one load and one mask), so text that is
+mostly ASCII decodes about twice as fast as with a byte-by-byte decoder. Multi-byte sequences,
+invalid bytes and the last seven bytes of the text go through an out-of-line decoder that returns
+in registers. No kind of input measured is slower than the byte-by-byte decoder at `-O3`, random
+bytes included: a
+test of the first byte alone decodes English faster still (5.7x), but about half the bytes of
+random input are ASCII, so that test is mispredicted on every other code point (0.7x). On an
+Apple M4 Pro (Apple clang 17, `-O3`), in ns per code point from `bench/bench.cc` ("pipeline"
+decodes, then adds `category_of` and `tolower`; the speedup over the byte-by-byte decoder is in
+parentheses):
 
 | text | decode | pipeline |
 | --- | ---: | ---: |
-| English words | 0.27 | 0.63 |
-| English with accents and quotes | 0.43 | 0.85 |
-| Cyrillic words | 1.8 | 2.3 |
-| CJK with ASCII digits and spaces | 2.0 | 2.2 |
-| Emoji | 2.8 | 3.2 |
-| Random bytes (mostly invalid UTF-8) | 4.1 | 4.7 |
+| English words | 0.76 (2.3x) | 0.65 (2.8x) |
+| One accented letter in 33 | 1.09 (1.7x) | 1.08 (1.8x) |
+| English with accents and quotes | 0.98 (1.8x) | 1.00 (1.9x) |
+| English read as Latin-1 | 1.10 (1.6x) | 1.07 (1.7x) |
+| Cyrillic words | 1.6 (1.2x) | 2.0 (1.3x) |
+| CJK with ASCII digits and spaces | 1.6 (1.1x) | 1.9 (1.2x) |
+| Emoji | 2.8 (1.3x) | 3.1 (1.2x) |
+| Every length equally likely | 4.7 (1.3x) | 5.1 (1.3x) |
+| Random bytes (mostly invalid UTF-8) | 2.5 (1.2x) | 2.8 (1.2x) |
 
-Random bytes, where about half the bytes are ASCII and most of the rest are invalid, are the
-slowest input. On an Intel i9-9980HK the same rows take 0.48 and 1.5 (English words), 0.67 and
-1.8 (English with accents), 3.2 and 4.2 (Cyrillic), 3.0 and 4.0 (CJK), 5.4 and 6.0 (emoji) and
-6.6 and 7.7 (random bytes) ns for decode and pipeline.
+On an Apple M1 Pro the speedups run from 1.2x (emoji) to 2.3x (English words). On an Intel
+i9-9980HK they run from 1.0x (Cyrillic) to 2.0x (English words); built at `-O2` the Cyrillic row
+reads 0.9x there. The same decode loop runs up to 30% apart on the i9 depending on where the
+compiler places it, so `bench/bench.cc` times each decoder at eight alignments of the loop and
+prints the mean, the worst alignment and the spread of the baseline.
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build

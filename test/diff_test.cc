@@ -18,6 +18,11 @@
 #include <string>
 #include <vector>
 
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
+
 namespace {
 
 std::size_t checked = 0;
@@ -172,6 +177,109 @@ void test_streams(std::size_t scale) {
 	std::printf("streams: %zu checks\n", checked - before);
 }
 
+// The window of eight ASCII bytes: one byte of each value at each position of an ASCII buffer, and
+// pairs of them, decoded to the end at every length around the window (the last bytes of the buffer
+// take the path without a window).
+void test_windows() {
+	std::size_t before = checked;
+	auto same_stream = [](const unsigned char* buf, std::size_t len) {
+		const char* base = reinterpret_cast<const char*>(buf);
+		const char* po = base;
+		const char* pn = base;
+		const char* end = base + len;
+		while (po < end) {
+			char32_t co = unicode_old::next_utf8(po, end);
+			char32_t cn = unicode::next_utf8(pn, end);
+			++checked;
+			if (co != cn || po != pn) {
+				FAIL("window stream differs at byte %td of %zu: want U+%04x +%td got U+%04x +%td", po - base, len,
+				     static_cast<unsigned>(co), po - base, static_cast<unsigned>(cn), pn - base);
+				return;
+			}
+		}
+	};
+	unsigned char buf[24];
+	for (std::size_t pos = 0; pos < 14; ++pos) {
+		for (unsigned v = 0; v < 256; ++v) {
+			std::memset(buf, 'a', sizeof buf);
+			buf[pos] = static_cast<unsigned char>(v);
+			for (std::size_t len = 1; len <= 20; ++len) {
+				same_stream(buf, len);
+			}
+		}
+	}
+	static const unsigned char vals[] = {0x00, 0x7F, 0x80, 0xA9, 0xBF, 0xC2, 0xC3, 0xE2, 0xF0, 0xF4, 0xFF};
+	for (std::size_t i = 0; i < 12; ++i) {
+		for (std::size_t j = i + 1; j < 14; ++j) {
+			for (unsigned char x : vals) {
+				for (unsigned char y : vals) {
+					std::memset(buf, 'a', sizeof buf);
+					buf[i] = x;
+					buf[j] = y;
+					for (std::size_t len = 1; len <= 18; ++len) {
+						same_stream(buf, len);
+					}
+				}
+			}
+		}
+	}
+	std::printf("windows: %zu checks\n", checked - before);
+}
+
+#if defined(__unix__) || defined(__APPLE__)
+// Decodes text that ends at the last byte before an inaccessible page: a read past `end` (by the
+// window or by a sequence) crashes the test.
+void test_guard_page() {
+	const std::size_t page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+	void* region = mmap(nullptr, 2 * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (region == MAP_FAILED || mprotect(static_cast<char*>(region) + page, page, PROT_NONE) != 0) {
+		std::printf("guard page: skipped (no mmap)\n");
+		return;
+	}
+	std::size_t before = checked;
+	Rng rng{0x6a7d};
+	for (std::size_t len = 1; len <= 40; ++len) {
+		for (std::size_t round = 0; round < 400; ++round) {
+			std::string s;
+			while (s.size() < len) {
+				switch (rng.below(5)) {
+					case 0:
+					case 1:
+						s.push_back(static_cast<char>(0x20 + rng.below(0x5f)));
+						break;
+					case 2:
+						s.push_back(static_cast<char>(rng()));
+						break;
+					case 3:
+						unicode::append_utf8(s, static_cast<char32_t>(0x80 + rng.below(0x700)));
+						break;
+					default:
+						unicode::append_utf8(s, static_cast<char32_t>(rng.below(0x110000)));
+						break;
+				}
+			}
+			s.resize(len);  // a sequence may be cut: the byte after it is the inaccessible page
+			char* at = static_cast<char*>(region) + page - len;
+			std::memcpy(at, s.data(), len);
+			const char* po = at;
+			const char* pn = at;
+			const char* end = at + len;
+			while (po < end) {
+				char32_t co = unicode_old::next_utf8(po, end);
+				char32_t cn = unicode::next_utf8(pn, end);
+				++checked;
+				if (co != cn || po != pn) {
+					FAIL("guard page stream differs at byte %td of %zu", po - at, len);
+					break;
+				}
+			}
+		}
+	}
+	munmap(region, 2 * page);
+	std::printf("guard page: %zu checks\n", checked - before);
+}
+#endif
+
 void test_encode_and_tables() {
 	std::size_t before = checked;
 	for (char32_t c = 0; c <= unicode::max_code_point + 3; ++c) {
@@ -231,6 +339,10 @@ int main(int argc, char** argv) {
 	test_all_short_strings();
 	test_every_code_point(full);
 	test_streams(scale);
+	test_windows();
+#if defined(__unix__) || defined(__APPLE__)
+	test_guard_page();
+#endif
 	test_encode_and_tables();
 	if (failures != 0) {
 		std::printf("%zu of %zu checks DIFFER from the frozen original\n", failures, checked);

@@ -4,6 +4,65 @@ Notable changes to unicode, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); entries are dated because the
 library has no releases.
 
+## 2026-11-01
+
+### Changed
+
+- `next_utf8` decides ASCII on a window of eight bytes (one 8-byte load and one mask), where the
+  entry below decided it on the first byte. Everything else goes to `detail::decode_utf8`:
+  multi-byte sequences, invalid bytes, and the last seven bytes of the text (which use the
+  first-byte test). `decode_utf8` is out of line, starts on a 64-byte boundary and returns the
+  code point and the next address in registers, where `detail::next_utf8_multibyte` took `p` by
+  reference. Decoded code points and bytes consumed are identical for every input, invalid
+  sequences included.
+- Why: with the first-byte test, text that is not mostly ASCII lost to the frozen decoder. About
+  half the bytes of random input are ASCII, so the test was mispredicted on every other code
+  point (0.67x to 0.72x of the frozen decoder), and Cyrillic read 0.84x on the i9. A window of
+  eight ASCII bytes is predictable on text and on random bytes. The price is English: 2.3x of the
+  frozen decoder (it was 5.7x) on the M4 Pro.
+- Placement matters on x86. With `decode_utf8` at an arbitrary address the i9 decoded Cyrillic
+  about 20% and CJK about 25% slower than with it on a 64-byte boundary.
+
+Time per code point from `bench/bench.cc` (Apple clang, `-O3`, strict holds). Before is the frozen
+header in `test/unicode_old.hh`; "x" is before over after. Each decoder runs in eight copies of the
+loop, shifted by 8 bytes each, and the figures are means over the eight (the same code runs up to
+30% apart from where its loop lands on the i9; "A/A" and "layout" in the bench output show it).
+"decode" sums the code points; "pipeline" also adds `category_of` and `tolower`.
+
+| text | M4 Pro decode | pipeline | M1 Pro decode | pipeline | i9 decode | pipeline |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| English words | 1.725 to 0.757 ns, 2.28x | 2.81x | 2.095 to 0.932, 2.25x | 2.30x | 1.952 to 0.955, 2.04x | 1.89x |
+| European, one accent in 33 | 1.65x | 1.77x | 1.61x | 1.57x | 1.51x | 1.45x |
+| English with accents, quotes, a few emoji | 1.84x | 1.89x | 1.79x | 1.76x | 1.65x | 1.58x |
+| English read as Latin-1 | 1.57x | 1.73x | 1.60x | 1.57x | 1.46x | 1.42x |
+| Cyrillic words | 1.20x | 1.32x | 1.52x | 1.30x | 1.00x | 0.99x |
+| CJK with ASCII digits and spaces | 1.11x | 1.16x | 1.25x | 1.20x | 1.37x | 1.23x |
+| Emoji | 1.25x | 1.21x | 1.17x | 1.20x | 1.30x | 1.19x |
+| Every length equally likely | 1.30x | 1.26x | 1.32x | 1.27x | 1.30x | 1.21x |
+| Random bytes (mostly invalid UTF-8) | 1.17x | 1.15x | 1.26x | 1.20x | 1.16x | 1.07x |
+
+No row is below 1.11x on the two Apple hosts. On the i9 the lowest are Cyrillic (1.00x decode,
+0.99x pipeline; its worst single alignment is 0.97x and 0.85x) and random bytes in the pipeline
+(1.07x, worst alignment 0.92x). Built at `-O2` instead of `-O3` the i9 reads 0.92x and 0.87x on
+Cyrillic, where every code point is a call into `decode_utf8` (the frozen decoder is a call too),
+and every other row stays at 1.04x or more. The `append_utf8` rows run the same code before and
+after: 0.98x to 1.02x on the Apple hosts, 0.69x to 0.94x on the i9, which is the noise floor of
+that host for a loop that is not alignment-controlled.
+
+For comparison, the first-byte version (the entry below) measured on the M4 Pro: English 5.74x,
+accents 4.26x, Cyrillic 1.01x, CJK 1.09x, emoji 1.25x, every length 1.27x, random bytes 0.72x.
+
+### Added
+
+- `test/diff_test.cc` sweeps one byte of each value at each position of an ASCII buffer, and pairs
+  of them, at every length around the window (2.6M checks), and decodes text that ends at the last
+  byte before an inaccessible page, so that a read past `end` crashes the test.
+- `tools/mutants.py` breaks the decoder in 24 ways (7 of them in the window and the tail).
+- `bench/bench.cc` times each decoder at eight loop alignments, and has rows for text with sparse
+  accents and for Latin-1 read as bytes.
+- Checked on Linux (clang 12, g++ 11, glibc): the differential test under ASan and UBSan at `-O1` and
+  `-O3`, and 2.8M libFuzzer runs under ASan and UBSan, all clean.
+
 ## 2026-10-31
 
 ### Changed

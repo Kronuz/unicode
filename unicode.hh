@@ -28,8 +28,18 @@
 #include "unicode_tables.hh"
 
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <string_view>
+#include <type_traits>
+
+#if defined(__GNUC__) || defined(__clang__)
+#define UNICODE_OUT_OF_LINE __attribute__((noinline, aligned(64)))
+#elif defined(_MSC_VER)
+#define UNICODE_OUT_OF_LINE __declspec(noinline)
+#else
+#define UNICODE_OUT_OF_LINE
+#endif
 
 namespace unicode {
 
@@ -88,17 +98,26 @@ inline void append_utf8(std::string& out, char32_t c) {
 
 namespace detail {
 
-// The multi-byte part of next_utf8, for a lead byte b0 of 0x80 or more. A continuation byte b is
-// valid when (b ^ 0x80) < 0x40, and that value is its six payload bits.
-constexpr char32_t next_utf8_multibyte(const char*& p, const char* end, unsigned b0) noexcept {
+// A decoded code point and the address of the byte after it.
+struct utf8_step {
+	char32_t cp;
+	const char* next;
+};
+
+// Decodes the code point at p (p < end) whose first byte is b0 = *p. A continuation byte b is valid
+// when (b ^ 0x80) < 0x40, and that value is its six payload bits. This is every case but ASCII
+// inside a window of ASCII; next_utf8 calls it for the rest. It is not inlined, it returns its
+// two results in registers (so a caller's loop keeps `p` out of memory) and it starts on a 64-byte
+// boundary, so its hot path sits in one cache line. On an Intel i9 the same code at an arbitrary
+// address decoded Cyrillic about 20% and CJK about 25% slower.
+UNICODE_OUT_OF_LINE constexpr utf8_step decode_utf8(const char* p, const char* end, unsigned b0) noexcept {
 	const auto left = end - p;
 	auto cont = [&](int i) -> unsigned { return static_cast<unsigned char>(p[i]) ^ 0x80u; };
 	if (b0 >= 0xC2 && b0 <= 0xDF) {
 		if (left >= 2) {
 			const unsigned c1 = cont(1);
 			if (c1 < 0x40) {
-				p += 2;
-				return char32_t(((b0 & 0x1F) << 6) | c1);
+				return {char32_t(((b0 & 0x1F) << 6) | c1), p + 2};
 			}
 		}
 	} else if (b0 >= 0xE0 && b0 <= 0xEF) {
@@ -107,8 +126,7 @@ constexpr char32_t next_utf8_multibyte(const char*& p, const char* end, unsigned
 			if ((c1 | c2) < 0x40) {
 				char32_t c = char32_t(((b0 & 0x0F) << 12) | (c1 << 6) | c2);
 				if (c >= 0x800) {
-					p += 3;
-					return c;
+					return {c, p + 3};
 				}
 			}
 		}
@@ -118,29 +136,43 @@ constexpr char32_t next_utf8_multibyte(const char*& p, const char* end, unsigned
 			if ((c1 | c2 | c3) < 0x40) {
 				char32_t c = char32_t(((b0 & 0x07) << 18) | (c1 << 12) | (c2 << 6) | c3);
 				if (c >= 0x10000 && c <= max_code_point) {
-					p += 4;
-					return c;
+					return {c, p + 4};
 				}
 			}
 		}
 	}
-	++p;
-	return b0;
+	return {b0, p + 1};
 }
 
 }  // namespace detail
 
 // Decodes the code point at p (p < end), advancing p. A byte that does not start a valid,
-// shortest-form sequence decodes as itself (ISO-8859-1), one byte at a time. ASCII, the common
-// case, is decided by one comparison.
+// shortest-form sequence decodes as itself (ISO-8859-1), one byte at a time.
+//
+// Eight bytes that are all ASCII (one load and one mask) decide the common case. Anything else, a
+// multi-byte sequence, an invalid byte, or the last seven bytes of the text, goes through
+// detail::decode_utf8, whose branches are those of a plain range test on the lead byte. Testing the
+// first byte alone for ASCII is faster on English text but adds an unpredictable branch on every
+// other kind of input.
 constexpr char32_t next_utf8(const char*& p, const char* end) noexcept {
-	const unsigned char b0 = static_cast<unsigned char>(*p);
-	if (b0 < 0x80) {
+	const unsigned b0 = static_cast<unsigned char>(*p);
+	if (!std::is_constant_evaluated() && end - p >= 8) {
+		std::uint64_t window;
+		std::memcpy(&window, p, sizeof window);
+		if ((window & 0x8080808080808080ull) == 0) {
+			++p;
+			return b0;
+		}
+	} else if (b0 < 0x80) {
 		++p;
 		return b0;
 	}
-	return detail::next_utf8_multibyte(p, end, b0);
+	const auto step = detail::decode_utf8(p, end, b0);
+	p = step.next;
+	return step.cp;
 }
 
 
 }  // namespace unicode
+
+#undef UNICODE_OUT_OF_LINE

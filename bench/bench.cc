@@ -7,6 +7,12 @@
 // the best pass of each. "A/A" is the spread between the frozen original's best in even and odd
 // rounds: it shows how much the host moved during the row.
 //
+// A decode loop runs up to 30% faster or slower depending on where the compiler places it, for the
+// same code. So decode and pipeline rows time each decoder in eight copies of the loop, shifted by
+// 8 bytes each, and report the mean over the eight: "x" is old over new by those means, "worst" the
+// smallest ratio at any one alignment, "layout" how far the frozen decoder's own eight copies
+// differ (the noise floor for a single build).
+//
 // Build: cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --target unicode_bench
 // Run:   ./build/unicode_bench [FILE]     (FILE: one more corpus, any UTF-8 text)
 #include "unicode.hh"
@@ -137,6 +143,32 @@ std::string random_bytes() {
 	return s;
 }
 
+// Mostly ASCII with one accented letter in about thirty code points (Spanish, German).
+std::string european() {
+	std::string s = english_words();
+	std::string out;
+	static const char32_t accented[] = {U'\u00e9', U'\u00f1', U'\u00fc', U'\u00e1', U'\u00f3', U'\u00df', U'\u00e4'};
+	for (char c : s) {
+		if (rng() % 33 == 0) {
+			unicode::append_utf8(out, accented[rng() % (sizeof(accented) / sizeof(*accented))]);
+		} else {
+			out += c;
+		}
+	}
+	return out;
+}
+
+// English read as Latin-1: one stray byte 0xC0..0xFF in forty, none of them valid UTF-8.
+std::string latin1() {
+	std::string s = english_words();
+	for (auto& c : s) {
+		if (rng() % 40 == 0) {
+			c = static_cast<char>(0xC0 + rng() % 0x40);
+		}
+	}
+	return s;
+}
+
 struct Corpus {
 	const char* name;
 	std::string text;
@@ -173,46 +205,94 @@ void row(const Corpus& c, const char* op, Old&& old_fn, New&& new_fn, int rounds
 	            100.0 * std::abs(a_even - a_odd) / a);
 }
 
-std::uint64_t decode_old(const Corpus& c) {
+// Shifts the code after it by N bytes (a jump over N bytes of padding), to move the loop below it.
+#if defined(__GNUC__) && defined(__aarch64__)
+#define SHIFT_CODE(N) asm volatile("b 1f\n .skip " #N "\n1:")
+#elif defined(__GNUC__) && defined(__x86_64__)
+#define SHIFT_CODE(N) asm volatile("jmp 1f\n .skip " #N "\n1:")
+#else
+#define SHIFT_CODE(N) static_cast<void>(0)
+#endif
+
+constexpr int alignments = 8;
+
+struct Frozen {
+	static char32_t next(const char*& p, const char* end) { return unicode_old::next_utf8(p, end); }
+	static std::uint64_t category(char32_t c) { return std::uint64_t(unicode_old::category_of(c)) + unicode_old::tolower(c); }
+};
+
+struct Current {
+	static char32_t next(const char*& p, const char* end) { return unicode::next_utf8(p, end); }
+	static std::uint64_t category(char32_t c) { return std::uint64_t(unicode::category_of(c)) + unicode::tolower(c); }
+};
+
+// One copy of the decode loop (Pipeline: also classify and lowercase), moved by Shift * 8 bytes.
+template <typename D, int Shift, bool Pipeline>
+__attribute__((noinline)) std::uint64_t decode_loop(const Corpus& c) {
+	if constexpr (Shift == 1) SHIFT_CODE(8);
+	if constexpr (Shift == 2) SHIFT_CODE(16);
+	if constexpr (Shift == 3) SHIFT_CODE(24);
+	if constexpr (Shift == 4) SHIFT_CODE(32);
+	if constexpr (Shift == 5) SHIFT_CODE(40);
+	if constexpr (Shift == 6) SHIFT_CODE(48);
+	if constexpr (Shift == 7) SHIFT_CODE(56);
 	const char* p = c.text.data();
 	const char* end = p + c.text.size();
 	std::uint64_t s = 0;
 	while (p < end) {
-		s += unicode_old::next_utf8(p, end);
+		char32_t ch = D::next(p, end);
+		if constexpr (Pipeline) {
+			s += D::category(ch);
+		} else {
+			s += ch;
+		}
 	}
 	return s;
 }
 
-std::uint64_t decode_new(const Corpus& c) {
-	const char* p = c.text.data();
-	const char* end = p + c.text.size();
-	std::uint64_t s = 0;
-	while (p < end) {
-		s += unicode::next_utf8(p, end);
-	}
-	return s;
+template <typename D, bool Pipeline>
+void time_alignments(const Corpus& c, double (&best)[alignments], int reps) {
+	best[0] = std::min(best[0], best_ns_per_cp(c, decode_loop<D, 0, Pipeline>, reps));
+	best[1] = std::min(best[1], best_ns_per_cp(c, decode_loop<D, 1, Pipeline>, reps));
+	best[2] = std::min(best[2], best_ns_per_cp(c, decode_loop<D, 2, Pipeline>, reps));
+	best[3] = std::min(best[3], best_ns_per_cp(c, decode_loop<D, 3, Pipeline>, reps));
+	best[4] = std::min(best[4], best_ns_per_cp(c, decode_loop<D, 4, Pipeline>, reps));
+	best[5] = std::min(best[5], best_ns_per_cp(c, decode_loop<D, 5, Pipeline>, reps));
+	best[6] = std::min(best[6], best_ns_per_cp(c, decode_loop<D, 6, Pipeline>, reps));
+	best[7] = std::min(best[7], best_ns_per_cp(c, decode_loop<D, 7, Pipeline>, reps));
 }
 
-std::uint64_t pipeline_old(const Corpus& c) {
-	const char* p = c.text.data();
-	const char* end = p + c.text.size();
-	std::uint64_t s = 0;
-	while (p < end) {
-		char32_t ch = unicode_old::next_utf8(p, end);
-		s += std::uint64_t(unicode_old::category_of(ch)) + unicode_old::tolower(ch);
+// Frozen and current decoder over eight loop alignments each; rounds alternate them. Prints the mean
+// ns per code point of each, old over new by those means, the worst single alignment, A/A (the
+// frozen decoder's mean in even against odd rounds) and the spread of its own eight alignments.
+template <bool Pipeline>
+void decode_row(const Corpus& c, const char* op, int rounds = 6, int reps = 2) {
+	double old_even[alignments], old_odd[alignments], fresh[alignments];
+	std::fill_n(old_even, alignments, 1e300);
+	std::fill_n(old_odd, alignments, 1e300);
+	std::fill_n(fresh, alignments, 1e300);
+	for (int r = 0; r < rounds; ++r) {
+		if (r % 2) {
+			time_alignments<Frozen, Pipeline>(c, old_odd, reps);
+		} else {
+			time_alignments<Frozen, Pipeline>(c, old_even, reps);
+		}
+		time_alignments<Current, Pipeline>(c, fresh, reps);
 	}
-	return s;
-}
-
-std::uint64_t pipeline_new(const Corpus& c) {
-	const char* p = c.text.data();
-	const char* end = p + c.text.size();
-	std::uint64_t s = 0;
-	while (p < end) {
-		char32_t ch = unicode::next_utf8(p, end);
-		s += std::uint64_t(unicode::category_of(ch)) + unicode::tolower(ch);
+	double a = 0, b = 0, ae = 0, ao = 0, worst = 1e300, lo = 1e300, hi = 0;
+	for (int k = 0; k < alignments; ++k) {
+		double old_k = std::min(old_even[k], old_odd[k]);
+		a += old_k / alignments;
+		b += fresh[k] / alignments;
+		ae += old_even[k] / alignments;
+		ao += old_odd[k] / alignments;
+		worst = std::min(worst, old_k / fresh[k]);
+		lo = std::min(lo, old_k);
+		hi = std::max(hi, old_k);
 	}
-	return s;
+	std::printf("%-12s %-9s %5.2f B/cp  old %6.3f ns  new %6.3f ns  x%5.2f  worst x%5.2f   A/A %4.1f%%  layout %4.1f%%\n",
+	            c.name, op, static_cast<double>(c.text.size()) / static_cast<double>(c.cps.size()), a, b, a / b, worst,
+	            100.0 * std::abs(ae - ao) / a, 100.0 * (hi - lo) / lo);
 }
 
 std::uint64_t encode_old(const Corpus& c) {
@@ -246,7 +326,9 @@ Corpus make(const char* name, std::string text) {
 int main(int argc, char** argv) {
 	std::vector<Corpus> corpora;
 	corpora.push_back(make("english", english_words()));
+	corpora.push_back(make("european", european()));
 	corpora.push_back(make("english+", english_plus()));
+	corpora.push_back(make("latin1", latin1()));
 	corpora.push_back(make("cyrillic", cyrillic()));
 	corpora.push_back(make("cjk", cjk()));
 	corpora.push_back(make("emoji", emoji()));
@@ -260,8 +342,8 @@ int main(int argc, char** argv) {
 	}
 	std::printf("unicode bench (ns per code point)\n");
 	for (const auto& c : corpora) {
-		row(c, "decode", decode_old, decode_new);
-		row(c, "pipeline", pipeline_old, pipeline_new);
+		decode_row<false>(c, "decode");
+		decode_row<true>(c, "pipeline");
 		row(c, "encode", encode_old, encode_new);
 	}
 	return 0;
