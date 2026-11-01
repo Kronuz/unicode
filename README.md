@@ -86,34 +86,74 @@ Not for:
 
 ## ⚡ Performance
 
-Nanoseconds per code point from `bench/bench.cc`, on an Apple M4 Pro with Apple clang 17
-at `-O3`. "decode" sums the code points; "pipeline" decodes, then adds `category_of` and
-`tolower`, as a tokenizer does. Each decoder runs in eight copies of the loop, shifted by
-8 bytes each, and the figures are means over the eight.
+Nanoseconds per code point to decode 2 MB of each kind of text and add up the code points
+("decode"), and to decode and also add `category_of` and `tolower` of each code point, as
+a tokenizer does ("pipeline"). The rows are the text; the columns are implementations:
+`unicode` is `next_utf8` here, [utf8cpp](https://github.com/nemtrif/utfcpp) 4.2.1 is
+`utf8::next` (which checks its input) and `utf8::unchecked::next` (which trusts it),
+Hoehrmann is Bjoern Hoehrmann's [DFA
+decoder](https://bjoern.hoehrmann.de/utf-8/decoder/dfa/) written out from its description,
+and [utf8proc](https://github.com/JuliaStrings/utf8proc) 2.11.3 is `utf8proc_iterate`,
+`utf8proc_category` and `utf8proc_tolower` (Unicode 17, as here). utf8cpp and Hoehrmann
+have no tables, so their pipeline uses this library's. All are built with the same
+compiler and flags and return the same sums as `unicode` on the rows of valid UTF-8 (the
+bench stops when one differs); the row of invalid UTF-8 shows `unicode` alone (`-`),
+because the others reject bad bytes where `next_utf8` reads them as Latin-1.
 
-| text | decode | pipeline |
-| --- | ---: | ---: |
-| English words | 0.76 | 0.65 |
-| One accented letter in 33 | 1.09 | 1.08 |
-| English with accents and quotes | 0.98 | 1.00 |
-| English read as Latin-1 | 1.10 | 1.07 |
-| Cyrillic words | 1.6 | 2.0 |
-| CJK with ASCII digits and spaces | 1.6 | 1.9 |
-| Emoji | 2.8 | 3.1 |
-| Every length equally likely | 4.7 | 5.1 |
-| Random bytes (mostly invalid UTF-8) | 2.5 | 2.8 |
+Apple M4 Pro, macOS 26.7 (arm64):
+
+| text | decode: unicode | utf8cpp | utf8cpp unchecked | Hoehrmann | utf8proc | pipeline: unicode | utf8cpp | utf8cpp unchecked | Hoehrmann | utf8proc |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| English words | 0.75 | 1.31 | 0.27 | 0.57 | 0.75 | 0.64 | 1.63 | 0.59 | 0.89 | 2.62 |
+| One accented letter in 33 | 1.08 | 1.52 | 0.47 | 0.83 | 0.93 | 1.07 | 1.74 | 0.77 | 1.30 | 2.77 |
+| English with accents and quotes | 0.97 | 1.42 | 0.42 | 0.79 | 0.89 | 0.98 | 1.86 | 0.81 | 1.36 | 2.78 |
+| Cyrillic words | 1.61 | 2.78 | 1.19 | 2.00 | 1.93 | 1.98 | 2.99 | 1.59 | 2.58 | 3.65 |
+| CJK with ASCII digits and spaces | 1.56 | 2.85 | 0.93 | 1.93 | 1.83 | 1.93 | 3.10 | 1.35 | 2.82 | 3.58 |
+| Emoji | 2.78 | 5.78 | 1.87 | 3.60 | 3.27 | 3.15 | 4.44 | 2.33 | 4.17 | 4.77 |
+| Every length equally likely | 4.64 | 6.73 | 4.43 | 7.52 | 5.47 | 5.06 | 7.29 | 4.57 | 8.00 | 8.27 |
+| Random bytes (invalid UTF-8) | 2.55 | - | - | - | - | 2.84 | - | - | - | - |
+
+Intel Core i9-9980HK, macOS 15.8 (x86-64):
+
+| text | decode: unicode | utf8cpp | utf8cpp unchecked | Hoehrmann | utf8proc | pipeline: unicode | utf8cpp | utf8cpp unchecked | Hoehrmann | utf8proc |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| English words | 0.92 | 3.16 | 0.42 | 1.30 | 1.64 | 1.57 | 4.29 | 1.17 | 2.44 | 5.30 |
+| One accented letter in 33 | 1.50 | 3.51 | 0.67 | 1.58 | 1.90 | 2.27 | 4.64 | 1.32 | 2.77 | 5.57 |
+| English with accents and quotes | 1.28 | 3.47 | 0.59 | 1.53 | 1.83 | 2.02 | 4.50 | 1.27 | 2.69 | 5.47 |
+| Cyrillic words | 2.66 | 6.40 | 2.06 | 3.86 | 3.92 | 4.24 | 7.56 | 2.39 | 4.66 | 7.71 |
+| CJK with ASCII digits and spaces | 2.89 | 7.14 | 2.00 | 3.55 | 4.32 | 4.11 | 8.28 | 2.29 | 5.00 | 7.77 |
+| Emoji | 4.98 | 9.07 | 3.38 | 5.60 | 6.96 | 6.44 | 10.2 | 3.66 | 7.12 | 10.4 |
+| Every length equally likely | 6.78 | 11.5 | 6.34 | 9.77 | 8.69 | 8.86 | 12.9 | 6.09 | 11.1 | 13.6 |
+| Random bytes (invalid UTF-8) | 3.48 | - | - | - | - | 5.04 | - | - | - | - |
+
+In the pipeline `unicode` is faster than the three decoders that check their input
+(utf8cpp, Hoehrmann, utf8proc) on every row of valid UTF-8, by 1.2× to 4.1× on the M4 Pro
+and 1.1× to 3.4× on the i9. Decode alone is closer. On the i9 `unicode` still leads those
+three on every row (1.05× to 3.4×). On the M4 Pro it leads utf8cpp (1.4× to 2.1×) but
+trails Hoehrmann's DFA on the three mostly-ASCII rows (0.57 against 0.75 ns on English
+words) and utf8proc on two of them (0.93 against 1.08 ns with one accent in 33; the two
+are level on English words). utf8cpp's `utf8::unchecked::next`, which neither checks the
+bytes nor stops at an end, is faster than `unicode` on every row of both machines: by
+1.05× to 2.7× in decode and 1.09× to 1.8× in the pipeline.
+
+Apple clang 17.0.0 at `-O3 -DNDEBUG` (CMake Release), each machine to itself, cells are
+means over eight loop alignments. To rebuild and rerun (the build fetches utf8cpp and
+utf8proc at those tags):
 
 ```sh
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DUNICODE_BENCH_COMPARE=ON
 cmake --build build --target unicode_bench
-./build/unicode_bench [FILE]
+./build/unicode_bench --compare
 ```
 
-[docs/perf/next-utf8.md](docs/perf/next-utf8.md) has the method and the numbers on an
-Apple M1 Pro and an Intel Core i9-9980HK.
+[docs/perf/comparison.md](docs/perf/comparison.md) has every row, the method and the
+spread between runs. [docs/perf/next-utf8.md](docs/perf/next-utf8.md) has the method for
+the ASCII window and the numbers on an Apple M1 Pro.
 
 ## 📚 Documentation
 
+- [docs/perf/comparison.md](docs/perf/comparison.md): `next_utf8` against utf8proc, utf8cpp and
+  Hoehrmann's decoder, every row on two machines.
 - [docs/perf/next-utf8.md](docs/perf/next-utf8.md): how `next_utf8` is measured.
 - [CHANGELOG.md](CHANGELOG.md): notable changes, with their measurements.
 - [AGENTS.md](AGENTS.md): repository map and invariants.

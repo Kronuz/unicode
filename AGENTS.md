@@ -28,7 +28,7 @@ CHANGELOG.md           Dated changes, with measurements.
   byte) and sends everything else through `detail::decode_utf8`, which is out of line, starts on
   a 64-byte boundary and returns its result in registers. Do not replace the window with a test of
   the first byte alone: that is faster on English and about 30% slower on arbitrary bytes,
-  because one more branch becomes unpredictable (see the README). Keep `decode_utf8` out of
+  because one more branch becomes unpredictable (see docs/perf/next-utf8.md). Keep `decode_utf8` out of
   line and aligned: at an arbitrary address the i9 ran Cyrillic and CJK 20% to 25% slower. The
   window is a speed heuristic: whatever the other seven bytes hold, a window that passes has an
   ASCII first byte, which decodes as itself. Dropping only the first or only the second byte from

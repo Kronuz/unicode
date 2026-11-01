@@ -12,7 +12,7 @@ Decoded code points and bytes consumed are identical to the frozen decoder (`tes
 
 ## Method
 
-- Bench: `bench/bench.cc`, target `unicode_bench`, `./build/unicode_bench [FILE]`. It times each decoder over 2 MB of text of nine shapes, the rows of the table below. "decode" sums the code points. "pipeline" also calls `category_of` and `tolower`, the loop of a tokenizer.
+- Bench: `bench/bench.cc`, target `unicode_bench`, `./build/unicode_bench [FILE]`. It times each decoder over 2 MB of text of nine shapes, the rows of the table below. "decode" sums the code points. "pipeline" also calls `category_of` and `tolower`, the loop of a tokenizer. The same bench times other decoders against `next_utf8` (`--compare`): [comparison.md](comparison.md).
 - Arms: the frozen header (before) and the current one (after), alternated over rounds.
 - Layout control: the same decode loop runs up to 30% apart on the Intel host depending on where the compiler places it. Each decoder is timed in eight copies of the loop, shifted by 8 bytes each, and the figure is the mean of the eight. The bench prints the worst alignment and the spread of the frozen decoder against itself ("A/A" and "layout").
 - Machines: Apple M4 Pro, Apple M1 Pro, Intel Core i9-9980HK (macOS 15, x86_64). Apple clang 17, `-O3`, with the machine to itself.
