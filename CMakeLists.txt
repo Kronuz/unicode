@@ -12,6 +12,14 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   add_executable(unicode_test test/test.cc)
   target_link_libraries(unicode_test PRIVATE unicode)
   add_test(NAME unicode COMMAND unicode_test)
+
+  # Differential test: decoding, encoding and the tables against a frozen copy of the original
+  # header (test/unicode_old.hh).
+  add_executable(unicode_diff_test test/diff_test.cc)
+  target_link_libraries(unicode_diff_test PRIVATE unicode)
+  add_test(NAME unicode_diff COMMAND unicode_diff_test)
+
+  # Benchmark against the frozen original (not run by ctest).
   add_executable(unicode_bench bench/bench.cc)
   target_link_libraries(unicode_bench PRIVATE unicode)
   option(UNICODE_FUZZ "Build the libFuzzer target" OFF)

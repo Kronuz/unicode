@@ -86,42 +86,61 @@ inline void append_utf8(std::string& out, char32_t c) {
 	}
 }
 
-// Decodes the code point at p (p < end), advancing p. A byte that does not start a valid,
-// shortest-form sequence decodes as itself (ISO-8859-1), one byte at a time.
-constexpr char32_t next_utf8(const char*& p, const char* end) noexcept {
-	const unsigned char b0 = static_cast<unsigned char>(*p);
-	auto cont = [&](std::size_t i) -> int {
-		if (p + i >= end) { return -1; }
-		const unsigned char b = static_cast<unsigned char>(p[i]);
-		return (b & 0xC0) == 0x80 ? (b & 0x3F) : -1;
-	};
+namespace detail {
+
+// The multi-byte part of next_utf8, for a lead byte b0 of 0x80 or more. A continuation byte b is
+// valid when (b ^ 0x80) < 0x40, and that value is its six payload bits.
+constexpr char32_t next_utf8_multibyte(const char*& p, const char* end, unsigned b0) noexcept {
+	const auto left = end - p;
+	auto cont = [&](int i) -> unsigned { return static_cast<unsigned char>(p[i]) ^ 0x80u; };
 	if (b0 >= 0xC2 && b0 <= 0xDF) {
-		int c1 = cont(1);
-		if (c1 >= 0) {
-			p += 2;
-			return char32_t(((b0 & 0x1F) << 6) | c1);
+		if (left >= 2) {
+			const unsigned c1 = cont(1);
+			if (c1 < 0x40) {
+				p += 2;
+				return char32_t(((b0 & 0x1F) << 6) | c1);
+			}
 		}
 	} else if (b0 >= 0xE0 && b0 <= 0xEF) {
-		int c1 = cont(1), c2 = cont(2);
-		if (c1 >= 0 && c2 >= 0) {
-			char32_t c = char32_t(((b0 & 0x0F) << 12) | (c1 << 6) | c2);
-			if (c >= 0x800) {
-				p += 3;
-				return c;
+		if (left >= 3) {
+			const unsigned c1 = cont(1), c2 = cont(2);
+			if ((c1 | c2) < 0x40) {
+				char32_t c = char32_t(((b0 & 0x0F) << 12) | (c1 << 6) | c2);
+				if (c >= 0x800) {
+					p += 3;
+					return c;
+				}
 			}
 		}
 	} else if (b0 >= 0xF0 && b0 <= 0xF4) {
-		int c1 = cont(1), c2 = cont(2), c3 = cont(3);
-		if (c1 >= 0 && c2 >= 0 && c3 >= 0) {
-			char32_t c = char32_t(((b0 & 0x07) << 18) | (c1 << 12) | (c2 << 6) | c3);
-			if (c >= 0x10000 && c <= max_code_point) {
-				p += 4;
-				return c;
+		if (left >= 4) {
+			const unsigned c1 = cont(1), c2 = cont(2), c3 = cont(3);
+			if ((c1 | c2 | c3) < 0x40) {
+				char32_t c = char32_t(((b0 & 0x07) << 18) | (c1 << 12) | (c2 << 6) | c3);
+				if (c >= 0x10000 && c <= max_code_point) {
+					p += 4;
+					return c;
+				}
 			}
 		}
 	}
 	++p;
 	return b0;
 }
+
+}  // namespace detail
+
+// Decodes the code point at p (p < end), advancing p. A byte that does not start a valid,
+// shortest-form sequence decodes as itself (ISO-8859-1), one byte at a time. ASCII, the common
+// case, is decided by one comparison.
+constexpr char32_t next_utf8(const char*& p, const char* end) noexcept {
+	const unsigned char b0 = static_cast<unsigned char>(*p);
+	if (b0 < 0x80) {
+		++p;
+		return b0;
+	}
+	return detail::next_utf8_multibyte(p, end, b0);
+}
+
 
 }  // namespace unicode

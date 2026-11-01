@@ -75,9 +75,28 @@ the tables match Xapian 2.1.0's `Unicode::get_category` and `Unicode::tolower` o
 
 ## ⚡ Performance
 
-Decoding, classifying, and lowercasing English Wikipedia text (10,000 articles, 52M
-code points, mostly ASCII) takes 1.88 ns per code point on an Intel i9-9980HK, Apple
-clang `-O3 -march=native` (`bench/bench.cc`).
+`next_utf8` decides ASCII with one inline comparison, so text that is mostly ASCII decodes
+fast. On an Apple M4 Pro (Apple clang 17, `-O3`), in ns per code point from `bench/bench.cc`
+("pipeline" decodes, then adds `category_of` and `tolower`):
+
+| text | decode | pipeline |
+| --- | ---: | ---: |
+| English words | 0.27 | 0.63 |
+| English with accents and quotes | 0.43 | 0.85 |
+| Cyrillic words | 1.8 | 2.3 |
+| CJK with ASCII digits and spaces | 2.0 | 2.2 |
+| Emoji | 2.8 | 3.2 |
+| Random bytes (mostly invalid UTF-8) | 4.1 | 4.7 |
+
+Random bytes, where about half the bytes are ASCII and most of the rest are invalid, are the
+slowest input.
+
+```sh
+cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
+./build/unicode_bench [FILE]
+```
+
+[CHANGELOG.md](CHANGELOG.md) lists the changes with their measurements.
 
 ## 🔁 Regenerating the tables
 
