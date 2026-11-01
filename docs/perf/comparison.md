@@ -30,7 +30,7 @@ utf8proc and utf8cpp are fetched at those tags by `-DUNICODE_BENCH_COMPARE=ON` a
 
 - Every decoder runs in eight copies of the loop, each shifted by 8 bytes, and a cell is the mean over the eight alignments of the fastest of 24 passes (eight rounds of three). The same loop runs up to 30% apart depending on where the compiler places it (see [next-utf8.md](next-utf8.md)).
 - Rounds alternate between the decoders, so a slow stretch of the host lands on all of them. "A/A" is the largest difference, over the decoders of a row, between the mean of the even rounds and the mean of the odd rounds.
-- Each machine ran the table once, with the machine to itself. The largest A/A is 22% on the M4 Pro and 5% on the i9: a cell whose row shows a large A/A can move by that much between runs.
+- The M4 Pro ran the table twice, each with the machine to itself, and a cell is the lowest of the runs; runs differ by at most 10% in a cell, and the largest A/A of a run is 22%. The i9 ran the table twice, each with the machine to itself, and a cell is the lowest of the runs; runs differ by at most 6% in a cell, and the largest A/A of a run is 5%.
 - Build: Apple clang 17.0.0, CMake Release (`-O3 -DNDEBUG`), `-std=gnu++20`.
 
 ```sh
@@ -54,7 +54,7 @@ Apple clang 17.0.0 (clang-1700.3.19.1), 14 cores (10 performance, 4 efficiency).
 | English read as Latin-1 (invalid UTF-8) | 1.10 | - | - | - | - | 1.08 | - | - | - | - |
 | Cyrillic words | 1.61 | 2.78 | 1.19 | 2.00 | 1.93 | 1.98 | 2.99 | 1.59 | 2.58 | 3.65 |
 | CJK with ASCII digits and spaces | 1.56 | 2.85 | 0.93 | 1.93 | 1.83 | 1.93 | 3.10 | 1.35 | 2.82 | 3.58 |
-| Emoji | 2.78 | 5.78 | 1.87 | 3.60 | 3.27 | 3.15 | 4.44 | 2.33 | 4.17 | 4.77 |
+| Emoji | 2.78 | 5.32 | 1.87 | 3.60 | 3.26 | 3.15 | 4.44 | 2.33 | 4.17 | 4.65 |
 | Every length equally likely | 4.64 | 6.73 | 4.43 | 7.52 | 5.47 | 5.06 | 7.29 | 4.57 | 8.00 | 8.27 |
 | Random bytes (invalid UTF-8) | 2.55 | - | - | - | - | 2.84 | - | - | - | - |
 
@@ -64,16 +64,16 @@ Apple clang 17.0.0 (clang-1700.6.4.2), 8 cores, 16 threads.
 
 | text | decode: unicode | utf8cpp | utf8cpp unchecked | Hoehrmann | utf8proc | pipeline: unicode | utf8cpp | utf8cpp unchecked | Hoehrmann | utf8proc |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| English words | 0.92 | 3.16 | 0.42 | 1.30 | 1.64 | 1.57 | 4.29 | 1.17 | 2.44 | 5.30 |
-| One accented letter in 33 | 1.50 | 3.51 | 0.67 | 1.58 | 1.90 | 2.27 | 4.64 | 1.32 | 2.77 | 5.57 |
-| English with accents and quotes | 1.28 | 3.47 | 0.59 | 1.53 | 1.83 | 2.02 | 4.50 | 1.27 | 2.69 | 5.47 |
-| English read as Latin-1 (invalid UTF-8) | 1.55 | - | - | - | - | 2.27 | - | - | - | - |
-| Cyrillic words | 2.66 | 6.40 | 2.06 | 3.86 | 3.92 | 4.24 | 7.56 | 2.39 | 4.66 | 7.71 |
-| CJK with ASCII digits and spaces | 2.89 | 7.14 | 2.00 | 3.55 | 4.32 | 4.11 | 8.28 | 2.29 | 5.00 | 7.77 |
-| Emoji | 4.98 | 9.07 | 3.38 | 5.60 | 6.96 | 6.44 | 10.2 | 3.66 | 7.12 | 10.4 |
-| Every length equally likely | 6.78 | 11.5 | 6.34 | 9.77 | 8.69 | 8.86 | 12.9 | 6.09 | 11.1 | 13.6 |
-| Random bytes (invalid UTF-8) | 3.48 | - | - | - | - | 5.04 | - | - | - | - |
+| English words | 0.92 | 3.15 | 0.42 | 1.28 | 1.61 | 1.54 | 4.28 | 1.16 | 2.42 | 5.25 |
+| One accented letter in 33 | 1.48 | 3.46 | 0.65 | 1.56 | 1.86 | 2.21 | 4.52 | 1.27 | 2.70 | 5.45 |
+| English with accents and quotes | 1.26 | 3.35 | 0.59 | 1.49 | 1.78 | 1.97 | 4.45 | 1.25 | 2.63 | 5.43 |
+| English read as Latin-1 (invalid UTF-8) | 1.46 | - | - | - | - | 2.21 | - | - | - | - |
+| Cyrillic words | 2.65 | 6.30 | 2.03 | 3.78 | 3.89 | 4.15 | 7.50 | 2.36 | 4.59 | 7.66 |
+| CJK with ASCII digits and spaces | 2.83 | 7.12 | 1.99 | 3.46 | 4.26 | 4.09 | 8.22 | 2.29 | 4.93 | 7.69 |
+| Emoji | 4.92 | 9.00 | 3.38 | 5.60 | 6.92 | 6.35 | 10.1 | 3.60 | 7.06 | 10.3 |
+| Every length equally likely | 6.65 | 11.5 | 6.34 | 9.66 | 8.62 | 8.65 | 12.8 | 6.05 | 10.9 | 13.5 |
+| Random bytes (invalid UTF-8) | 3.44 | - | - | - | - | 4.99 | - | - | - | - |
 
 ## Reading the numbers
 
-In the pipeline `unicode` is faster than the three decoders that check their input (utf8cpp, Hoehrmann, utf8proc) on every row of valid UTF-8, by 1.2× to 4.1× on the M4 Pro and 1.1× to 3.4× on the i9. Decode alone is closer. On the i9 `unicode` still leads those three on every row (1.05× to 3.4×). On the M4 Pro it leads utf8cpp (1.4× to 2.1×) but trails Hoehrmann's DFA on the three mostly-ASCII rows (0.57 against 0.75 ns on English words) and utf8proc on two of them (0.93 against 1.08 ns with one accent in 33; the two are level on English words). utf8cpp's `utf8::unchecked::next`, which neither checks the bytes nor stops at an end, is faster than `unicode` on every row of both machines: by 1.05× to 2.7× in decode and 1.09× to 1.8× in the pipeline.
+In the pipeline `unicode` is faster than the three decoders that check their input (utf8cpp, Hoehrmann, utf8proc) on every row of valid UTF-8, by 1.2× to 4.1× on the M4 Pro and 1.1× to 3.4× on the i9. Decode alone is closer. On the i9 `unicode` still leads those three on every row (1.05× to 3.4×). On the M4 Pro it leads utf8cpp (1.4× to 1.9×) but trails Hoehrmann's DFA on the three mostly-ASCII rows (0.57 against 0.75 ns on English words) and utf8proc on two of them (0.93 against 1.08 ns with one accent in 33; the two are level on English words). utf8cpp's `utf8::unchecked::next`, which neither checks the bytes nor stops at an end, is faster than `unicode` on every row of both machines: by 1.05× to 2.7× in decode and 1.09× to 1.8× in the pipeline.
