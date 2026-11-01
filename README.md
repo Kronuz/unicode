@@ -109,7 +109,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
 ./build/unicode_bench [FILE]
 ```
 
-[CHANGELOG.md](CHANGELOG.md) lists the changes with their measurements.
+[docs/perf/next-utf8.md](docs/perf/next-utf8.md) has the method, the numbers on three machines and the variants that did not win. [CHANGELOG.md](CHANGELOG.md) lists the changes with their measurements.
 
 ## 🔁 Regenerating the tables
 

@@ -13,6 +13,7 @@ tools/mutants.py       Breaks the decoder in 24 ways and requires test/diff_test
 fuzz/fuzz_utf8.cc      libFuzzer: decoding stays in bounds, advances, equals the frozen decoder, and round-trips.
 bench/bench.cc         ns per code point against the frozen copy, over text of several shapes, each decoder in eight loop alignments (optionally one more corpus from a file).
 docs/unicode.d2     README diagram; render: d2 --layout elk --sketch --theme 302 docs/unicode.d2 docs/unicode.svg
+docs/perf/next-utf8.md  Method, numbers (Apple M4 Pro, Apple M1 Pro, Intel i9-9980HK) and rejected variants of the ASCII window.
 CHANGELOG.md           Dated changes, with measurements.
 ```
 

@@ -23,7 +23,7 @@ library has no releases.
 - Placement matters on x86. With `decode_utf8` at an arbitrary address the i9 decoded Cyrillic
   about 20% and CJK about 25% slower than with it on a 64-byte boundary.
 
-Time per code point from `bench/bench.cc` (Apple clang, `-O3`, strict holds). Before is the frozen
+Time per code point from `bench/bench.cc` (Apple clang, `-O3`, each machine to itself). Before is the frozen
 header in `test/unicode_old.hh`; "x" is before over after. Each decoder runs in eight copies of the
 loop, shifted by 8 bytes each, and the figures are means over the eight (the same code runs up to
 30% apart from where its loop lands on the i9; "A/A" and "layout" in the bench output show it).
@@ -54,6 +54,7 @@ accents 4.26x, Cyrillic 1.01x, CJK 1.09x, emoji 1.25x, every length 1.27x, rando
 
 ### Added
 
+- `docs/perf/next-utf8.md`: the method, the numbers on three machines and the variants that did not win.
 - `test/diff_test.cc` sweeps one byte of each value at each position of an ASCII buffer, and pairs
   of them, at every length around the window (2.6M checks), and decodes text that ends at the last
   byte before an inaccessible page, so that a read past `end` crashes the test.
@@ -73,8 +74,8 @@ accents 4.26x, Cyrillic 1.01x, CJK 1.09x, emoji 1.25x, every length 1.27x, rando
   bytes together, where it called a lambda per byte. Decoded code points and bytes consumed are
   identical for every input, invalid sequences included.
 
-Time per code point on an Apple M4 Pro (Apple clang 17, `-O3`), from `bench/bench.cc` under an
-exclusive hold. Before is the frozen header in `test/unicode_old.hh`; each figure is the best of
+Time per code point on an Apple M4 Pro (Apple clang 17, `-O3`), from `bench/bench.cc` with the
+machine to itself. Before is the frozen header in `test/unicode_old.hh`; each figure is the best of
 several alternating passes over 2 MB of text. "decode" sums the code points; "pipeline" also adds
 `category_of` and `tolower`, the loop of a tokenizer. "A/A" is how far the frozen code differs
 from itself between rounds:
@@ -91,7 +92,7 @@ from itself between rounds:
 
 `append_utf8` and the table lookups are unchanged (1.00x on every text on the M4 Pro).
 
-On an Intel i9-9980HK (Apple clang 17, `-O3`, exclusive hold), in ns per code point:
+On an Intel i9-9980HK (Apple clang 17, `-O3`, machine to itself), in ns per code point:
 
 | text | decode before | decode after | speedup | pipeline before | pipeline after | speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
