@@ -30,7 +30,7 @@ utf8proc and utf8cpp are fetched at those tags by `-DUNICODE_BENCH_COMPARE=ON` a
 
 - Every decoder runs in eight copies of the loop, each shifted by 8 bytes, and a cell is the mean over the eight alignments of the fastest of 24 passes (eight rounds of three). The same loop runs up to 30% apart depending on where the compiler places it (see [next-utf8.md](next-utf8.md)).
 - Rounds alternate between the decoders, so a slow stretch of the host lands on all of them. "A/A" is the largest difference, over the decoders of a row, between the mean of the even rounds and the mean of the odd rounds.
-- The M4 Pro ran the table twice, each with the machine to itself, and a cell is the lowest of the runs; runs differ by at most 10% in a cell, and the largest A/A of a run is 22%. The i9 ran the table twice, each with the machine to itself, and a cell is the lowest of the runs; runs differ by at most 6% in a cell, and the largest A/A of a run is 5%.
+- The M4 Pro ran the table twice, each with the machine to itself, and a cell is the lowest of the runs; runs differ by at most 10% in a cell, and the largest A/A of a run is 23%. The i9 ran the table twice, each with the machine to itself, and a cell is the lowest of the runs; runs differ by at most 7% in a cell, and the largest A/A of a run is 5%.
 - Build: Apple clang 17.0.0, CMake Release (`-O3 -DNDEBUG`), `-std=gnu++20`.
 
 ```sh
