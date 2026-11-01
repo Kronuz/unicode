@@ -89,7 +89,9 @@ fast. On an Apple M4 Pro (Apple clang 17, `-O3`), in ns per code point from `ben
 | Random bytes (mostly invalid UTF-8) | 4.1 | 4.7 |
 
 Random bytes, where about half the bytes are ASCII and most of the rest are invalid, are the
-slowest input.
+slowest input. On an Intel i9-9980HK the same rows take 0.48 and 1.5 (English words), 0.67 and
+1.8 (English with accents), 3.2 and 4.2 (Cyrillic), 3.0 and 4.0 (CJK), 5.4 and 6.0 (emoji) and
+6.6 and 7.7 (random bytes) ns for decode and pipeline.
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
