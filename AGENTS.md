@@ -11,8 +11,9 @@ test/diff_test.cc      Differential test (CTest `unicode_diff`): decoding, encod
 test/unicode_old.hh    Frozen unicode.hh at d80b6bb, namespace unicode_old. The oracle of diff_test.cc and the baseline of bench/bench.cc. Never edit it.
 tools/mutants.py       Breaks the decoder in 24 ways and requires test/diff_test.cc to fail on each.
 fuzz/fuzz_utf8.cc      libFuzzer: decoding stays in bounds, advances, equals the frozen decoder, and round-trips.
-bench/bench.cc         ns per code point against the frozen copy, over text of several shapes, each decoder in eight loop alignments (optionally one more corpus from a file).
+bench/bench.cc         ns per code point against the frozen copy, over text of several shapes, each decoder in eight loop alignments (optionally one more corpus from a file). `--compare` times the comparators (Hoehrmann's DFA written out in the file; with `-DUNICODE_BENCH_COMPARE=ON` also utf8proc and utf8cpp, fetched at pinned tags and seen by this target only) and checks each returns unicode.hh's sums; `--check` (CTest `unicode_bench_check`) compares every decoder on every code point.
 docs/perf/next-utf8.md  Method, numbers (Apple M4 Pro, Apple M1 Pro, Intel i9-9980HK) and rejected variants of the ASCII window.
+docs/perf/comparison.md  The README's performance table in full: every row against utf8proc, utf8cpp and Hoehrmann's DFA on the Apple M4 Pro and the Intel i9-9980HK, with the method and A/A spread.
 CHANGELOG.md           Dated changes, with measurements.
 ```
 

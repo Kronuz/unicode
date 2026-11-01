@@ -13,17 +13,35 @@
 // smallest ratio at any one alignment, "layout" how far the frozen decoder's own eight copies
 // differ (the noise floor for a single build).
 //
-// Build: cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --target unicode_bench
-// Run:   ./build/unicode_bench [FILE]     (FILE: one more corpus, any UTF-8 text)
+// The "compare" rows time the decoders a reader would otherwise use on the same eight alignments:
+// Bjoern Hoehrmann's DFA decoder (written out below), and with -DUNICODE_BENCH_COMPARE=ON utf8proc
+// (utf8proc_iterate, utf8proc_category, utf8proc_tolower) and utf8cpp (utf8::next, and the unchecked
+// utf8::unchecked::next). They run on the inputs that are valid UTF-8, where each must return the same sum
+// as unicode.hh (the bench stops if one does not; --check also compares every code point). The two
+// inputs with invalid bytes read as Latin-1 only in unicode.hh, so only it and the frozen original run there.
+//
+// Build: cmake -B build -DCMAKE_BUILD_TYPE=Release [-DUNICODE_BENCH_COMPARE=ON] && cmake --build build --target unicode_bench
+// Run:   ./build/unicode_bench [--compare] [FILE]     (--compare: only the compare rows; FILE: one more corpus, any
+//                                                      UTF-8 text)
+//        ./build/unicode_bench --check                (the results of every decoder, no timing; a CTest test)
 #include "unicode.hh"
 #include "../test/unicode_old.hh"
 
+#ifdef UNICODE_BENCH_COMPARE
+#include <utf8.h>
+#include <utf8proc.h>
+#endif
+
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <fstream>
+#include <initializer_list>
 #include <random>
 #include <sstream>
 #include <string>
@@ -173,6 +191,7 @@ struct Corpus {
 	const char* name;
 	std::string text;
 	std::vector<char32_t> cps;  // for the encode rows
+	bool valid = false;         // well-formed UTF-8: the comparators run on it
 };
 
 volatile std::uint64_t sink = 0;
@@ -225,6 +244,152 @@ struct Current {
 	static char32_t next(const char*& p, const char* end) { return unicode::next_utf8(p, end); }
 	static std::uint64_t category(char32_t c) { return std::uint64_t(unicode::category_of(c)) + unicode::tolower(c); }
 };
+
+// Bjoern Hoehrmann's UTF-8 decoder (https://bjoern.hoehrmann.de/utf-8/decoder/dfa/), rebuilt from its
+// description: a class for each byte, then one table lookup per byte moves between states. State 0 accepts,
+// state 12 rejects, the others count the continuation bytes still owed. Only well-formed UTF-8 is expected:
+// a rejected or cut sequence reads as U+FFFD.
+namespace dfa {
+
+constexpr unsigned reject = 12;
+
+constexpr std::uint8_t byte_class(unsigned b) {
+	if (b < 0x80) return 0;
+	if (b < 0x90) return 1;
+	if (b < 0xA0) return 9;
+	if (b < 0xC0) return 7;
+	if (b < 0xC2) return 8;
+	if (b < 0xE0) return 2;
+	if (b == 0xE0) return 10;
+	if (b == 0xED) return 4;
+	if (b < 0xF0) return 3;
+	if (b == 0xF0) return 11;
+	if (b < 0xF4) return 6;
+	if (b == 0xF4) return 5;
+	return 8;
+}
+
+struct Table {
+	std::uint8_t t[256 + 9 * 12];
+};
+
+constexpr Table make_table() {
+	Table r{};
+	for (unsigned b = 0; b < 256; ++b) {
+		r.t[b] = byte_class(b);
+	}
+	for (unsigned i = 256; i < sizeof r.t; ++i) {
+		r.t[i] = reject;
+	}
+	auto set = [&r](unsigned state, std::initializer_list<unsigned> classes, unsigned next) {
+		for (unsigned k : classes) {
+			r.t[256 + state + k] = std::uint8_t(next);
+		}
+	};
+	// From the start: one byte, or the lead byte of a sequence (E0, ED, F0 and F4 restrict the next byte).
+	set(0, {0}, 0);
+	set(0, {2}, 24);   // C2..DF: one continuation
+	set(0, {3}, 36);   // E1..EC, EE, EF: two
+	set(0, {4}, 60);   // ED: 80..9F, then one
+	set(0, {10}, 48);  // E0: A0..BF, then one
+	set(0, {11}, 72);  // F0: 90..BF, then two
+	set(0, {6}, 84);   // F1..F3: three
+	set(0, {5}, 96);   // F4: 80..8F, then two
+	set(24, {1, 9, 7}, 0);
+	set(36, {1, 9, 7}, 24);
+	set(48, {7}, 24);
+	set(60, {1, 9}, 24);
+	set(72, {9, 7}, 36);
+	set(84, {1, 9, 7}, 36);
+	set(96, {1}, 36);
+	return r;
+}
+
+inline constexpr Table table = make_table();
+
+}  // namespace dfa
+
+struct Dfa {
+	static char32_t next(const char*& p, const char* end) {
+		std::uint32_t state = 0, cp = 0;
+		do {
+			std::uint32_t b = static_cast<unsigned char>(*p++);
+			std::uint32_t k = dfa::table.t[b];
+			cp = state ? (b & 0x3F) | (cp << 6) : (0xFFu >> k) & b;
+			state = dfa::table.t[256 + state + k];
+		} while (state > dfa::reject && p < end);
+		return state == 0 ? cp : 0xFFFD;
+	}
+	static std::uint64_t category(char32_t c) { return Current::category(c); }
+};
+
+#ifdef UNICODE_BENCH_COMPARE
+// utf8cpp: utf8::next checks the sequence and the end; utf8::unchecked::next trusts its input. Neither
+// has tables, so the pipeline row gives them unicode.hh's.
+struct Utf8cpp {
+	static char32_t next(const char*& p, const char* end) { return utf8::next(p, end); }
+	static std::uint64_t category(char32_t c) { return Current::category(c); }
+};
+
+struct Utf8cppUnchecked {
+	static char32_t next(const char*& p, const char*) { return utf8::unchecked::next(p); }
+	static std::uint64_t category(char32_t c) { return Current::category(c); }
+};
+
+// utf8proc numbers its categories in another order than Xapian's, which unicode.hh follows.
+constexpr std::array<unicode::category, 30> utf8proc_categories = [] {
+	std::array<unicode::category, 30> m{};
+	using unicode::category;
+	m[UTF8PROC_CATEGORY_CN] = category::unassigned;
+	m[UTF8PROC_CATEGORY_LU] = category::uppercase_letter;
+	m[UTF8PROC_CATEGORY_LL] = category::lowercase_letter;
+	m[UTF8PROC_CATEGORY_LT] = category::titlecase_letter;
+	m[UTF8PROC_CATEGORY_LM] = category::modifier_letter;
+	m[UTF8PROC_CATEGORY_LO] = category::other_letter;
+	m[UTF8PROC_CATEGORY_MN] = category::non_spacing_mark;
+	m[UTF8PROC_CATEGORY_MC] = category::spacing_mark;
+	m[UTF8PROC_CATEGORY_ME] = category::enclosing_mark;
+	m[UTF8PROC_CATEGORY_ND] = category::decimal_number;
+	m[UTF8PROC_CATEGORY_NL] = category::letter_number;
+	m[UTF8PROC_CATEGORY_NO] = category::other_number;
+	m[UTF8PROC_CATEGORY_PC] = category::connector_punctuation;
+	m[UTF8PROC_CATEGORY_PD] = category::dash_punctuation;
+	m[UTF8PROC_CATEGORY_PS] = category::open_punctuation;
+	m[UTF8PROC_CATEGORY_PE] = category::close_punctuation;
+	m[UTF8PROC_CATEGORY_PI] = category::initial_punctuation;
+	m[UTF8PROC_CATEGORY_PF] = category::final_punctuation;
+	m[UTF8PROC_CATEGORY_PO] = category::other_punctuation;
+	m[UTF8PROC_CATEGORY_SM] = category::math_symbol;
+	m[UTF8PROC_CATEGORY_SC] = category::currency_symbol;
+	m[UTF8PROC_CATEGORY_SK] = category::modifier_symbol;
+	m[UTF8PROC_CATEGORY_SO] = category::other_symbol;
+	m[UTF8PROC_CATEGORY_ZS] = category::space_separator;
+	m[UTF8PROC_CATEGORY_ZL] = category::line_separator;
+	m[UTF8PROC_CATEGORY_ZP] = category::paragraph_separator;
+	m[UTF8PROC_CATEGORY_CC] = category::control;
+	m[UTF8PROC_CATEGORY_CF] = category::format;
+	m[UTF8PROC_CATEGORY_CS] = category::surrogate;
+	m[UTF8PROC_CATEGORY_CO] = category::private_use;
+	return m;
+}();
+
+struct Utf8proc {
+	static char32_t next(const char*& p, const char* end) {
+		utf8proc_int32_t cp;
+		utf8proc_ssize_t n = utf8proc_iterate(reinterpret_cast<const utf8proc_uint8_t*>(p), end - p, &cp);
+		if (n < 0) {
+			++p;
+			return 0xFFFD;
+		}
+		p += n;
+		return char32_t(cp);
+	}
+	static std::uint64_t category(char32_t c) {
+		auto k = utf8proc_categories[std::size_t(utf8proc_category(utf8proc_int32_t(c)))];
+		return std::uint64_t(k) + char32_t(utf8proc_tolower(utf8proc_int32_t(c)));
+	}
+};
+#endif
 
 // One copy of the decode loop (Pipeline: also classify and lowercase), moved by Shift * 8 bytes.
 template <typename D, int Shift, bool Pipeline>
@@ -311,8 +476,165 @@ std::uint64_t encode_new(const Corpus& c) {
 	return out.size();
 }
 
+// A decoder in the compare rows: how to time its loop at the eight alignments, and how to sum a corpus with it.
+struct Contender {
+	const char* name;
+	void (*time_at)(const Corpus&, double (&)[alignments], int);
+	std::uint64_t (*sum)(const Corpus&);
+};
+
+template <typename D, bool Pipeline>
+Contender contender(const char* name) {
+	return {name, &time_alignments<D, Pipeline>, &decode_loop<D, 0, Pipeline>};
+}
+
+// unicode.hh first, then the comparators, then the frozen original. On input that is not valid UTF-8 the
+// comparators are left out: they reject it (an error or U+FFFD) where unicode.hh reads it as Latin-1.
+template <bool Pipeline>
+std::vector<Contender> contenders(bool valid) {
+	std::vector<Contender> v;
+	v.push_back(contender<Current, Pipeline>("unicode"));
+	if (valid) {
+		v.push_back(contender<Dfa, Pipeline>("hoehrmann"));
+#ifdef UNICODE_BENCH_COMPARE
+		v.push_back(contender<Utf8cpp, Pipeline>("utf8cpp"));
+		v.push_back(contender<Utf8cppUnchecked, Pipeline>("utf8cpp-unc"));
+		v.push_back(contender<Utf8proc, Pipeline>("utf8proc"));
+#endif
+	}
+	v.push_back(contender<Frozen, Pipeline>("frozen"));
+	return v;
+}
+
+struct Slots {
+	double v[alignments];
+};
+
+void compare_header() {
+	std::printf("\ncompare (ns per code point: mean over eight loop alignments; sums checked equal to unicode.hh)\n");
+	std::printf("%-12s %-9s", "text", "op");
+	for (const auto& d : contenders<false>(true)) {
+		std::printf(" %11s", d.name);
+	}
+	std::printf("\n");
+}
+
+// Every decoder over eight loop alignments, rounds alternating between them (even and odd rounds are kept
+// apart: "A/A" is the largest spread between a decoder's even and odd rounds, how much the host moved).
+template <bool Pipeline>
+void compare_row(const Corpus& c, const char* op, int rounds = 8, int reps = 3) {
+	auto all = contenders<Pipeline>(true);
+	auto run = contenders<Pipeline>(c.valid);
+	std::uint64_t expect = run[0].sum(c);
+	for (const auto& d : run) {
+		if (d.sum(c) != expect) {
+			std::fprintf(stderr, "%s %s: %s returns a different sum than unicode.hh\n", c.name, op, d.name);
+			std::exit(1);
+		}
+	}
+	std::vector<Slots> even(run.size()), odd(run.size());
+	for (std::size_t i = 0; i < run.size(); ++i) {
+		std::fill_n(even[i].v, alignments, 1e300);
+		std::fill_n(odd[i].v, alignments, 1e300);
+	}
+	for (int r = 0; r < rounds; ++r) {
+		for (std::size_t i = 0; i < run.size(); ++i) {
+			run[i].time_at(c, (r % 2 ? odd[i] : even[i]).v, reps);
+		}
+	}
+	std::printf("%-12s %-9s", c.name, op);
+	double spread = 0;
+	for (const auto& d : all) {
+		std::size_t i = 0;
+		while (i < run.size() && std::strcmp(run[i].name, d.name) != 0) {
+			++i;
+		}
+		if (i == run.size()) {
+			std::printf(" %11s", "-");
+			continue;
+		}
+		double best = 0, e = 0, o = 0;
+		for (int k = 0; k < alignments; ++k) {
+			best += std::min(even[i].v[k], odd[i].v[k]) / alignments;
+			e += even[i].v[k] / alignments;
+			o += odd[i].v[k] / alignments;
+		}
+		spread = std::max(spread, std::abs(e - o) / best);
+		std::printf(" %11.3f", best);
+	}
+	std::printf("   A/A %4.1f%%\n", 100.0 * spread);
+}
+
+// Every decoder and every table the bench times gives unicode.hh's results: category and lowercase of every
+// code point, the decoding of every encoded code point (surrogates are not UTF-8), and each input that is
+// valid UTF-8, code point by code point.
+template <typename D>
+int check_decoder(const char* name, const std::vector<Corpus>& corpora) {
+	int bad = 0;
+	auto fail = [&](const char* what, unsigned long where) {
+		if (++bad <= 5) {
+			std::fprintf(stderr, "%s: %s differs at %lu\n", name, what, where);
+		}
+	};
+	std::string s;
+	for (char32_t c = 0; c <= unicode::max_code_point; ++c) {
+		if (D::category(c) != Current::category(c)) {
+			fail("category or lowercase", c);
+		}
+		if (c >= 0xD800 && c <= 0xDFFF) {
+			continue;
+		}
+		s.clear();
+		unicode::append_utf8(s, c);
+		const char* p = s.data();
+		const char* end = p + s.size();
+		if (D::next(p, end) != c || p != end) {
+			fail("decoding", c);
+		}
+	}
+	for (const auto& k : corpora) {
+		if (!k.valid) {
+			continue;
+		}
+		const char* p = k.text.data();
+		const char* end = p + k.text.size();
+		std::size_t i = 0;
+		while (p < end && i < k.cps.size() && D::next(p, end) == k.cps[i]) {
+			++i;
+		}
+		if (p != end || i != k.cps.size()) {
+			fail(k.name, i);
+		}
+	}
+	std::printf("%-12s %s\n", name, bad ? "FAIL" : "ok");
+	return bad;
+}
+
+int run_checks(const std::vector<Corpus>& corpora) {
+	int bad = check_decoder<Dfa>("hoehrmann", corpora);
+#ifdef UNICODE_BENCH_COMPARE
+	bad += check_decoder<Utf8cpp>("utf8cpp", corpora);
+	bad += check_decoder<Utf8cppUnchecked>("utf8cpp-unc", corpora);
+	bad += check_decoder<Utf8proc>("utf8proc", corpora);
+#endif
+	return bad ? 1 : 0;
+}
+
+// Well-formed UTF-8 by the DFA's rules.
+bool is_valid_utf8(const std::string& text) {
+	std::uint32_t state = 0;
+	for (char ch : text) {
+		state = dfa::table.t[256 + state + dfa::table.t[static_cast<unsigned char>(ch)]];
+		if (state == dfa::reject) {
+			return false;
+		}
+	}
+	return state == 0;
+}
+
 Corpus make(const char* name, std::string text) {
 	Corpus c{name, std::move(text), {}};
+	c.valid = is_valid_utf8(c.text);
 	const char* p = c.text.data();
 	const char* end = p + c.text.size();
 	while (p < end) {
@@ -324,6 +646,17 @@ Corpus make(const char* name, std::string text) {
 }  // namespace
 
 int main(int argc, char** argv) {
+	bool check = false, compare_only = false;
+	const char* file = nullptr;
+	for (int i = 1; i < argc; ++i) {
+		if (std::strcmp(argv[i], "--check") == 0) {
+			check = true;
+		} else if (std::strcmp(argv[i], "--compare") == 0) {
+			compare_only = true;
+		} else {
+			file = argv[i];
+		}
+	}
 	std::vector<Corpus> corpora;
 	corpora.push_back(make("english", english_words()));
 	corpora.push_back(make("european", european()));
@@ -334,17 +667,27 @@ int main(int argc, char** argv) {
 	corpora.push_back(make("emoji", emoji()));
 	corpora.push_back(make("random mix", random_mix()));
 	corpora.push_back(make("random bytes", random_bytes()));
-	if (argc > 1) {
-		std::ifstream in(argv[1], std::ios::binary);
+	if (file) {
+		std::ifstream in(file, std::ios::binary);
 		std::stringstream ss;
 		ss << in.rdbuf();
 		corpora.push_back(make("file", ss.str()));
 	}
-	std::printf("unicode bench (ns per code point)\n");
+	if (check) {
+		return run_checks(corpora);
+	}
+	if (!compare_only) {
+		std::printf("unicode bench (ns per code point)\n");
+		for (const auto& c : corpora) {
+			decode_row<false>(c, "decode");
+			decode_row<true>(c, "pipeline");
+			row(c, "encode", encode_old, encode_new);
+		}
+	}
+	compare_header();
 	for (const auto& c : corpora) {
-		decode_row<false>(c, "decode");
-		decode_row<true>(c, "pipeline");
-		row(c, "encode", encode_old, encode_new);
+		compare_row<false>(c, "decode");
+		compare_row<true>(c, "pipeline");
 	}
 	return 0;
 }
